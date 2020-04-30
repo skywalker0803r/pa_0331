@@ -11,7 +11,7 @@ import torch.utils.data as Data
 import torchvision
 import joblib
 from sklearn.preprocessing import StandardScaler
-
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 class panet(nn.Module):
     def __init__(self):
@@ -50,3 +50,93 @@ class panet(nn.Module):
         factor = x_resize[:,:,1:].permute(0,2,1) 
         
         return feed,factor
+
+class pa_api(object):
+    def __init__(self):
+        self.tag_map = tag_map
+        self.critic = critic.eval()
+        self.actor = net.eval()
+        self.mm_x = mm_x
+        self.mm_y = mm_y
+        self.x_col = x_cols
+        self.y_cols = y_cols
+        self.time_step = t
+        self.num_sensor = n
+    
+    def get_advice(self,set_point):
+        st = self.mm_y.transform(np.array([[set_point]]))
+        st = torch.tensor(st).cuda()
+        return self.actor(st)
+
+    def get_critic_output(self,advice):
+        output = self.critic(advice).detach().cpu().numpy()
+        return self.mm_y.inverse_transform(output)
+    
+    def pretty_advice(self,advice):
+        advice = advice.detach().cpu().numpy()
+        advice = self.mm_x.inverse_transform(advice)
+        advice = advice.reshape(self.time_step,self.num_sensor)
+        advice = pd.DataFrame(advice,columns=self.x_col)
+        advice = advice.describe().T[['50%','min','max']]
+        advice['chinese'] = advice.index.map(self.tag_map)
+        return advice[['chinese','50%','min','max']]
+
+class PandasModel(QtCore.QAbstractTableModel): 
+    def __init__(self, df = pd.DataFrame(), parent=None): 
+        QtCore.QAbstractTableModel.__init__(self, parent=parent)
+        self._df = df.copy()
+
+    def toDataFrame(self):
+        return self._df.copy()
+
+    def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+        if role != QtCore.Qt.DisplayRole:
+            return QtCore.QVariant()
+
+        if orientation == QtCore.Qt.Horizontal:
+            try:
+                return self._df.columns.tolist()[section]
+            except (IndexError, ):
+                return QtCore.QVariant()
+        elif orientation == QtCore.Qt.Vertical:
+            try:
+                # return self.df.index.tolist()
+                return self._df.index.tolist()[section]
+            except (IndexError, ):
+                return QtCore.QVariant()
+
+    def data(self, index, role=QtCore.Qt.DisplayRole):
+        if role != QtCore.Qt.DisplayRole:
+            return QtCore.QVariant()
+
+        if not index.isValid():
+            return QtCore.QVariant()
+
+        return QtCore.QVariant(str(self._df.iloc[index.row(), index.column()]))
+
+    def setData(self, index, value, role):
+        row = self._df.index[index.row()]
+        col = self._df.columns[index.column()]
+        if hasattr(value, 'toPyObject'):
+            # PyQt4 gets a QVariant
+            value = value.toPyObject()
+        else:
+            # PySide gets an unicode
+            dtype = self._df[col].dtype
+            if dtype != object:
+                value = None if value == '' else dtype.type(value)
+        self._df.set_value(row, col, value)
+        return True
+
+    def rowCount(self, parent=QtCore.QModelIndex()): 
+        return len(self._df.index)
+
+    def columnCount(self, parent=QtCore.QModelIndex()): 
+        return len(self._df.columns)
+
+    def sort(self, column, order):
+        colname = self._df.columns.tolist()[column]
+        self.layoutAboutToBeChanged.emit()
+        self._df.sort_values(colname, ascending= order == QtCore.Qt.AscendingOrder, inplace=True)
+        self._df.reset_index(inplace=True, drop=True)
+        self.layoutChanged.emit()
